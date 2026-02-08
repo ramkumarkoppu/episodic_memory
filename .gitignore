@@ -1,0 +1,35 @@
+# Runtime data
+memories/
+data/
+
+# Test artifacts
+test_camera.jpg
+test_audio.wav
+result.jpg
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+gem-venv/
+venv/
+.venv/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

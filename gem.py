@@ -167,10 +167,10 @@ import re           # Regular expressions for local query classification
 import os           # Environment variables, file paths
 import sys          # System-specific parameters, exit codes
 import io           # In-memory binary streams (for JPEG buffers)
-import json         # JSON encoding/decoding for metadata
-import json5        # Lenient JSON parser (handles malformed LLM output)
 import time         # Timestamps, sleep, performance timing
+import math         # Mathematical functions (exponential decay)
 import random       # Jitter for exponential backoff retry
+import select       # Non-blocking I/O for voice+keyboard input
 import tempfile     # Atomic file writes (crash-safe persistence)
 import subprocess   # Execute external commands (arecord for audio)
 from datetime import datetime, timedelta  # Human-readable timestamps + time math
@@ -182,6 +182,7 @@ from dataclasses import dataclass, field  # Clean data class definitions
 # Install with: pip install google-genai json5
 # On Pi: uses system pillow/numpy from apt (python3-pil, python3-numpy)
 # -----------------------------------------------------------------------------
+import json5                       # JSON parser (superset of json, handles malformed LLM output)
 import numpy as np                 # Numerical operations for frame comparison
 from PIL import Image, ImageDraw, ImageFont  # Image processing and annotation
 
@@ -1060,7 +1061,7 @@ class TemporalGraph:
             },
             "attached_objects": {k: list(v) for k, v in self.attached_objects.items()}
         }
-        atomic_write_text(path, json.dumps(data, indent=2))
+        atomic_write_text(path, json5.dumps(data, indent=2))
 
     def load(self, path: Path):
         """
@@ -1075,7 +1076,7 @@ class TemporalGraph:
             return
         
         try:
-            data = json.loads(path.read_text())
+            data = json5.loads(path.read_text())
             self.start_time = data.get("start_time", self.start_time)
             self.total_movements = data.get("total_movements", 0)
             
@@ -1240,7 +1241,7 @@ def save_metadata(memory: Memory) -> None:
         memory: Memory object to save
     """
     path = MEMORY_DIR / f"{memory.id}.json"
-    atomic_write_text(path, json.dumps({
+    atomic_write_text(path, json5.dumps({
         "id": memory.id,
         "timestamp": memory.timestamp,
         "location": memory.location,
@@ -1277,7 +1278,7 @@ def load_memory(mem_id: str) -> Memory | None:
     
     try:
         # Load JSON metadata
-        data = json.loads(path.read_text())
+        data = json5.loads(path.read_text())
         
         # Reconstruct Memory object
         memory = Memory(
@@ -2030,7 +2031,6 @@ class WhisplayHAT:
             audio_data = gemini.text_to_speech(clean_text)
             if audio_data:
                 # Save to temp file and play with aplay
-                import tempfile
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                     f.write(audio_data)
                     temp_path = f.name
@@ -2087,7 +2087,6 @@ class WhisplayHAT:
         # Suppress stderr during GPIO cleanup to hide PWM __del__ errors
         # (These are harmless but ugly - the lgpio library doesn't handle
         # cleanup order gracefully)
-        import os
         try:
             # Redirect stderr to /dev/null during cleanup
             devnull = os.open(os.devnull, os.O_WRONLY)
@@ -2114,10 +2113,10 @@ class WhisplayHAT:
 #
 # CAPABILITIES:
 # 1. Vision - Analyze images, detect objects with bounding boxes
-# 2. Embeddings - Generate vectors for semantic search
-# 3. Audio STT - Transcribe voice queries
-# 4. NLU - Extract object names from natural language
-# 5. Narrative - Generate causal explanations
+# 2. Audio STT - Transcribe voice queries
+# 3. NLU - Extract object names from natural language
+# 4. Narrative - Generate causal explanations
+# 5. TTS - Text-to-speech for audio feedback
 #
 # OPTIMIZATIONS:
 # - thinking_level=MINIMAL: Skip extended reasoning for faster response
@@ -2249,22 +2248,22 @@ class GeminiClient:
     1. Vision Analysis:
        - Input: JPEG image
        - Output: Objects with bounding boxes, scene description
-       
-    2. Embedding Generation:
-       - Input: Text description
-       - Output: 768-dimensional vector for similarity search
-       
-    3. Audio Transcription:
+
+    2. Audio Transcription:
        - Input: WAV audio
        - Output: Transcribed text
-       
-    4. Query NLU:
+
+    3. Query NLU:
        - Input: Natural language query ("Where are my car keys?")
        - Output: Object name ("keys")
-       
-    5. Narrative Generation:
+
+    4. Narrative Generation:
        - Input: Object name, movement history, current location
        - Output: Causal explanation of object's journey
+
+    5. Text-to-Speech:
+       - Input: Text string
+       - Output: WAV audio bytes for spoken feedback
     
     OPTIMIZATION NOTES:
     
@@ -2740,7 +2739,6 @@ Return ONLY the normalized object name. Use these standard names:
             - time_end: ISO datetime string if time mentioned (or None)
             - query: original query
         """
-        from datetime import datetime
         now = datetime.now()
 
         def _do_understand():
@@ -3109,18 +3107,6 @@ Use friendly, easy-to-understand language.""")]
             locations = list(set(m.location for m in memories[:5]))
             return f"During {time_period}, you were at: {', '.join(locations)}."
 
-    # NOTE: classify_query() removed - now using understand_query() which
-    # leverages Gemini 3's NLU for true language understanding instead of
-    # brittle regex patterns. Gemini understands:
-    # - Query intent (object/scene/time/person/near)
-    # - Entity extraction with synonym normalization
-    # - Time expression parsing to datetime ranges
-    # - Context and nuance that regex cannot capture
-    #
-    # For real-time performance:
-    # - Uses streaming for faster first-token latency
-    # - thinking_level=MINIMAL to skip extended reasoning
-    # - JSON response format for reliable parsing
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3228,7 +3214,7 @@ class MemoryIndex:
         # Try loading from index file first
         if self.index_file.exists():
             try:
-                data = json.loads(self.index_file.read_text())
+                data = json5.loads(self.index_file.read_text())
                 self.memories = data.get("memories", {})
                 self.access_log = data.get("access_log", {})
                 # Rebuild object index
@@ -3268,7 +3254,7 @@ class MemoryIndex:
 
         for path in MEMORY_DIR.glob("mem_*.json"):
             try:
-                data = json.loads(path.read_text())
+                data = json5.loads(path.read_text())
                 mem_id = data.get("id", path.stem)
                 if mem_id in self.memories:
                     continue  # Already in index
@@ -3324,7 +3310,7 @@ class MemoryIndex:
     def _save(self):
         """Save memory index to JSON file."""
         try:
-            atomic_write_text(self.index_file, json.dumps({
+            atomic_write_text(self.index_file, json5.dumps({
                 "memories": self.memories,
                 "access_log": self.access_log
             }, indent=2))
@@ -3398,6 +3384,9 @@ class MemoryIndex:
         self.by_person.clear()
         self.memories.clear()
         self._load()
+        # Also scan for new JSON files not yet in the index
+        # (daemon saves individual files immediately but batches index writes)
+        self._rebuild_from_files()
         log(f"[INDEX] Reloaded: {len(self.memories)} memories")
 
     # -------------------------------------------------------------------------
@@ -3454,7 +3443,6 @@ class MemoryIndex:
         Returns:
             float score (0.0 = should forget, higher = keep)
         """
-        import math
         now = datetime.now()
 
         # --- Component 1: Recency (exponential decay) ---
@@ -3780,9 +3768,6 @@ class MemoryIndex:
                 results.append((mem_id, others))
         return results
 
-    # NOTE: suggest_locations() removed - now using GeminiClient.suggest_locations()
-    # which leverages Gemini's world knowledge for smarter, context-aware suggestions
-    # that work for ANY object type (not just hardcoded ones).
 
 
 def parse_time_entity(entity: str) -> tuple[datetime, datetime]:
@@ -3857,8 +3842,6 @@ def parse_time_entity(entity: str) -> tuple[datetime, datetime]:
 
     # Fallback: if expression is unrecognized, default to last 24 hours
     return now - timedelta(hours=24), now
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4054,7 +4037,6 @@ def analyze_and_store(gemini: GeminiClient, index: MemoryIndex,
                         if TTS_ENABLED:
                             audio_data = gemini.text_to_speech(announcement)
                             if audio_data:
-                                import tempfile
                                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                                     f.write(audio_data)
                                     temp_path = f.name
@@ -4543,7 +4525,6 @@ def cmd_search():
 
             if voice:
                 # Non-blocking input loop that checks both keyboard and button
-                import select
                 print("\n🔍 Search (or press button for voice): ", end="", flush=True)
 
                 while raw_query is None:
@@ -4628,7 +4609,6 @@ def cmd_search():
 
             # For time queries, use Gemini-parsed time range directly
             if query_type == "time" and time_start and time_end:
-                from datetime import datetime
                 start = datetime.fromisoformat(time_start)
                 end = datetime.fromisoformat(time_end)
                 mem_ids = index.find_by_time(start, end)
@@ -5095,7 +5075,7 @@ def cmd_list():
     # Show recent memories (with tags)
     for path in files[:20]:
         try:
-            data = json.loads(path.read_text())
+            data = json5.loads(path.read_text())
             mem_id = data.get("id", path.stem)
             loc = data.get("location", "?")
             objs = [o.get("name", "?") for o in data.get("objects", [])[:4]]
